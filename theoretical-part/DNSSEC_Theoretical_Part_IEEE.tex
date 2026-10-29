@@ -1,0 +1,230 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage[hyphens]{url}
+\renewcommand{\tabularxcolumn}[1]{>{\raggedright\arraybackslash}p{#1}}
+\begin{document}
+
+\title{Evaluating the Transport Impact of Large\\Post-Quantum DNSSEC Signatures\\
+{\large Theoretical Part (Project -- Part~1)}
+\thanks{Network and Information Systems Security, ISCTE -- Instituto
+Universit\'ario de Lisboa. Submitted on 28~October~2026.}
+}
+
+\author{\IEEEauthorblockN{Justin Kasper}
+\IEEEauthorblockA{\textit{Student no.\ 145971}\\
+\textit{ISCTE -- Instituto Universit\'ario de Lisboa}\\
+Lisbon, Portugal}
+\and
+\IEEEauthorblockN{Mert Duman}
+\IEEEauthorblockA{\textit{Student no.\ 145872}\\
+\textit{ISCTE -- Instituto Universit\'ario de Lisboa}\\
+Lisbon, Portugal}
+\and
+\IEEEauthorblockN{Efim Shchegolev}
+\IEEEauthorblockA{\textit{Student no.\ 144376}\\
+\textit{ISCTE -- Instituto Universit\'ario de Lisboa}\\
+Lisbon, Portugal}
+\and
+\IEEEauthorblockN{Sezer Tetik}
+\IEEEauthorblockA{\textit{Student no.\ 145873}\\
+\textit{ISCTE -- Instituto Universit\'ario de Lisboa}\\
+Lisbon, Portugal}
+}
+
+\maketitle
+
+\begin{abstract}
+Post-quantum signature schemes such as ML-DSA-44, standardized by NIST in
+FIPS~204, produce signatures and public keys that are one to two orders of
+magnitude larger than those of the classical algorithms used in DNSSEC today.
+As a result, signed DNS responses routinely exceed the 1,232-byte EDNS(0)
+payload recommendation and the typical Internet MTU, which pushes them onto IP
+fragmentation, truncation with TCP fallback, or alternative transports. This
+theoretical part reviews the DNS and DNSSEC foundations, the classical and
+post-quantum signature algorithms relevant to DNSSEC, and the message-size and
+transport mechanisms that govern how large responses are delivered, including
+TCP fallback, Application-layer Request-based Resource Record Fragmentation
+(ARRF), and DNS over QUIC (DoQ). It then surveys related work and identifies
+the gap addressed by the practical part of the project: a controlled,
+reproducible comparison of these transports for ML-DSA-44 against an ECDSA
+baseline under varying latency and packet loss.
+\end{abstract}
+
+\begin{IEEEkeywords}
+DNSSEC, post-quantum cryptography, ML-DSA, TCP fallback, IP fragmentation,
+ARRF, DNS over QUIC
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+The Domain Name System (DNS) translates human-readable domain names into the
+numerical addresses that are required for almost every transaction on the
+Internet~\cite{rfc1035}. Despite this critical role, the original DNS protocol
+was not designed with any mechanism for verifying that a response actually
+originates from the authoritative source or that it has not been altered in
+transit~\cite{rfc4033}. The DNS Security Extensions (DNSSEC) were introduced to
+close this gap by adding data origin authentication and data integrity
+protection to DNS responses through digital signatures, without, however,
+providing confidentiality~\cite{rfc4033,rfc4034,rfc4035}. More than two decades
+after its initial specification, DNSSEC is considered the best current practice
+for authenticating DNS data~\cite{rfc9364}, even though deployment remains
+uneven: recent estimates suggest that fewer than ten percent of website domain
+names are signed and that only around a third of queries to recursive resolvers
+are actually validated~\cite{rfc9364}.
+
+The cryptographic foundation of DNSSEC, however, is now under long-term threat.
+The signature algorithms that are most widely deployed today, in particular RSA
+and the Elliptic Curve Digital Signature Algorithm
+(ECDSA)~\cite{rfc6605,rfc8624}, derive their security from the computational
+hardness of integer factorization and the discrete logarithm problem. A
+sufficiently large, cryptographically relevant quantum computer would be able
+to solve both of these problems efficiently using Shor's
+algorithm~\cite{shor}, which would allow an attacker to forge DNSSEC signatures
+and therefore to present spoofed DNS data as authentic.\footnote{This is a
+long-term, not an immediate, threat: at the time of writing, no
+cryptographically relevant quantum computer is publicly known to exist.
+Nevertheless, migration planning for long-lived infrastructure such as DNS is
+widely recommended well in advance of such a scenario.} To address this risk,
+the U.S. National Institute of Standards and Technology (NIST) has standardized
+the Module-Lattice-Based Digital Signature Algorithm (ML-DSA) in FIPS~204, a
+signature scheme whose security relies on the hardness of lattice problems and
+that is believed to remain secure even against an adversary equipped with a
+quantum computer~\cite{fips204}.
+
+Post-quantum cryptography (PQC) schemes such as ML-DSA, however, do not come
+without cost. The smallest standardized ML-DSA parameter set, ML-DSA-44,
+produces signatures of 2,420~octets and public keys of
+1,312~octets~\cite{fips204,mldsadraft}, which is one to two orders of magnitude
+larger than a typical ECDSA signature. For comparison, an ECDSA P-256
+signature occupies only 64~bytes, so an ML-DSA-44 signature is almost 38~times
+larger~\cite{cloudflareblog}. When such a signature is embedded into a DNSSEC
+response together with the DNS header, resource records, and---where
+applicable---a DNSKEY record, the resulting message can easily exceed the
+conservative 1,232-byte UDP payload size that is commonly recommended in
+operational practice today, and it will frequently exceed the roughly
+1,500-byte Maximum Transmission Unit (MTU) of a typical Ethernet
+path~\cite{rfc6891,cloudflaremtu}. Because DNS was originally designed around a
+512-byte UDP message size~\cite{rfc1035} and later extended via EDNS(0) to
+negotiate larger UDP payloads~\cite{rfc6891}, oversized post-quantum DNSSEC
+responses risk falling back to one of two imperfect mechanisms: IP-layer
+fragmentation, which is unreliable because many firewalls and other middleboxes
+silently drop fragmented packets~\cite{rfc7766,fragpoison}, or truncation of
+the UDP response followed by a retry over TCP, which guarantees delivery but
+adds at least one additional round trip and extra server-side
+state~\cite{rfc7766}. A drop-in replacement of classical signatures with
+quantum-safe ones is expected to increase DNSSEC query resolution times by at
+least a factor of two: a response carrying large post-quantum signatures is
+likely to be truncated, which wastes the initial UDP round trip, and the
+subsequent retry over TCP incurs at least two further round trips because of
+the three-way handshake~\cite{turbodns}.
+
+The DNS operator community has already begun to experiment with mitigations for
+this problem. Cloudflare has deployed experimental ML-DSA-44 validation on its
+public 1.1.1.1 resolver, relying on TCP fallback whenever a response becomes
+oversized~\cite{cloudflareblog}, and an open-source extension of the CoreDNS
+authoritative server has demonstrated on-the-fly signing with several PQC
+signature families, including ML-DSA~\cite{corednspqc,coredns}. At the same
+time, the research literature has proposed alternative transport mechanisms
+that try to avoid the drawbacks of both IP fragmentation and plain TCP
+fallback. Application-layer Request-based Resource Record Fragmentation (ARRF)
+fragments oversized DNS resource records at the DNS protocol layer itself
+rather than relying on the IP layer, with the resolver requesting any missing
+fragments explicitly~\cite{arrf}. DNS over QUIC (DoQ) instead moves the entire
+DNS exchange onto a dedicated, encrypted QUIC connection, which has its own
+packetization and loss-recovery behavior and therefore sidesteps classical IP
+fragmentation entirely~\cite{rfc9250}.
+
+Although each of these mechanisms---plain TCP fallback, ARRF, and DoQ---has
+been described or prototyped individually, a direct, controlled, and
+reproducible comparison of their latency, bandwidth, and reliability behavior
+specifically under the conditions created by post-quantum DNSSEC signatures is
+still largely missing from the public literature. This gap motivates the
+present project. Using ECDSA-based DNSSEC as a classical baseline and an
+ML-DSA-44-based DNSSEC deployment as the post-quantum case, this project
+evaluates DNS resolution under simulated network conditions with varying
+latency and packet loss, measuring query latency, resource utilization,
+bandwidth consumption, packet sizes, and the frequency of TCP fallback. Time
+permitting, the evaluation is extended to ARRF-based fragmentation and to DNS
+over QUIC, in order to assess which combination of signature algorithm and
+transport mechanism currently represents the most realistic path toward a
+quantum-resistant DNSSEC deployment.
+
+Concretely, the project is guided by the following research questions, which
+will be answered in the practical part (Project -- Part~2):
+\begin{itemize}
+\item[\textbf{RQ1:}] How much do ML-DSA-44 signatures increase DNSSEC response
+sizes, packet sizes, and bandwidth consumption, and how often do they trigger
+truncation and TCP fallback, compared with the ECDSA baseline?
+\item[\textbf{RQ2:}] How do the end-to-end query latency and resource
+utilization of post-quantum DNSSEC with TCP fallback change as path latency and
+packet loss increase?
+\item[\textbf{RQ3:}] (Time permitting.) To what extent can ARRF or DNS over
+QUIC reduce the overhead identified in RQ1 and RQ2?
+\end{itemize}
+
+The remainder of this (theoretical) part of the report is structured as
+follows. Section~\ref{sec:foundations} introduces the theoretical foundations
+that are necessary to understand the problem: the DNS and DNSSEC protocols, the
+classical and post-quantum signature algorithms relevant to this project, and
+the mechanisms that govern DNS message size and transport selection.
+Section~\ref{sec:related} positions this project with respect to the existing
+state of the art and related work. Section~\ref{sec:conclusion} closes the
+theoretical part with a brief summary and a transition toward the practical
+implementation and evaluation that are reported in Part~2 of this project.
+
+\begin{thebibliography}{00}
+
+%BIB-BEGIN
+\bibitem{rfc1035} P. Mockapetris, ``Domain names---Implementation and specification,'' RFC~1035, STD~13, Internet Engineering Task Force (IETF), Nov. 1987. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc1035}. [Accessed: Oct. 20, 2026].
+
+\bibitem{rfc4033} R. Arends, R. Austein, M. Larson, D. Massey, and S. Rose, ``DNS security introduction and requirements,'' RFC~4033, Internet Engineering Task Force (IETF), Mar. 2005. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc4033}. [Accessed: Oct. 20, 2026].
+
+\bibitem{rfc4034} R. Arends, R. Austein, M. Larson, D. Massey, and S. Rose, ``Resource records for the DNS security extensions,'' RFC~4034, Internet Engineering Task Force (IETF), Mar. 2005. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc4034}. [Accessed: Oct. 20, 2026].
+
+\bibitem{rfc4035} R. Arends, R. Austein, M. Larson, D. Massey, and S. Rose, ``Protocol modifications for the DNS security extensions,'' RFC~4035, Internet Engineering Task Force (IETF), Mar. 2005. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc4035}. [Accessed: Oct. 20, 2026].
+
+\bibitem{rfc9364} P. Hoffman, ``DNS security extensions (DNSSEC),'' RFC~9364, BCP~237, Internet Engineering Task Force (IETF), Feb. 2023. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9364}. [Accessed: Oct. 20, 2026].
+
+\bibitem{rfc6605} P. Hoffman and W. C. A. Wijngaards, ``Elliptic curve digital signature algorithm (DSA) for DNSSEC,'' RFC~6605, Internet Engineering Task Force (IETF), Apr. 2012. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc6605}. [Accessed: Oct. 20, 2026].
+
+\bibitem{rfc8624} P. Wouters and O. Sury, ``Algorithm implementation requirements and usage guidance for DNSSEC,'' RFC~8624, Internet Engineering Task Force (IETF), Jun. 2019. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc8624}. [Accessed: Oct. 20, 2026].
+
+\bibitem{shor} P. W. Shor, ``Polynomial-time algorithms for prime factorization and discrete logarithms on a quantum computer,'' \emph{SIAM J. Comput.}, vol.~26, no.~5, pp.~1484--1509, 1997, doi: 10.1137/S0097539795293172.
+
+\bibitem{fips204} National Institute of Standards and Technology, \emph{Module-Lattice-Based Digital Signature Standard}, FIPS~204, Aug. 2024, doi: 10.6028/NIST.FIPS.204. [Online]. Available: \url{https://csrc.nist.gov/pubs/fips/204/final}. [Accessed: Oct. 20, 2026].
+
+\bibitem{mldsadraft} B. E. Westerbaan and S. Schmieg, ``Module-lattice digital signature algorithm for DNSSEC,'' IETF Internet-Draft draft-westerbaan-dnssec-mldsa-04 (work in progress), Aug. 2026. [Online]. Available: \url{https://datatracker.ietf.org/doc/draft-westerbaan-dnssec-mldsa/}. [Accessed: Oct. 20, 2026].
+
+\bibitem{cloudflareblog} S. Neuteboom and B. Westerbaan, ``1.1.1.1 now supports post-quantum DNSSEC, all 2,420 bytes of it,'' Cloudflare Blog, Sep. 10, 2026. [Online]. Available: \url{https://blog.cloudflare.com/post-quantum-dnssec-1111/}. [Accessed: Oct. 2, 2026].
+
+\bibitem{rfc6891} J. Damas, M. Graff, and P. Vixie, ``Extension mechanisms for DNS (EDNS(0)),'' RFC~6891, STD~75, Internet Engineering Task Force (IETF), Apr. 2013. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc6891}. [Accessed: Oct. 20, 2026].
+
+\bibitem{cloudflaremtu} Cloudflare, ``Maximum transmission unit and maximum segment size,'' Cloudflare WAN Documentation, Aug. 24, 2026. [Online]. Available: \url{https://developers.cloudflare.com/cloudflare-wan/reference/mtu-mss/}. [Accessed: Oct. 2, 2026].
+
+\bibitem{rfc7766} J. Dickinson, S. Dickinson, R. Bellis, A. Mankin, and D. Wessels, ``DNS transport over TCP---Implementation requirements,'' RFC~7766, Internet Engineering Task Force (IETF), Mar. 2016. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc7766}. [Accessed: Oct. 20, 2026].
+
+\bibitem{fragpoison} A. Herzberg and H. Shulman, ``Fragmentation considered poisonous, or: One-domain-to-rule-them-all.org,'' in \emph{Proc. 2013 IEEE Conf. Communications and Network Security (CNS)}, 2013, pp.~224--232, doi: 10.1109/CNS.2013.6682711.
+
+\bibitem{turbodns} A. S. Rawat and M. P. Jhanwar, ``Post-quantum DNSSEC with faster TCP fallbacks,'' in \emph{Progress in Cryptology -- INDOCRYPT 2024}, Lecture Notes in Computer Science. Cham, Switzerland: Springer, 2024, pp.~212--236, doi: 10.1007/978-3-031-80311-6\_11.
+
+\bibitem{corednspqc} J. Gento Suela, J. Blanco-Romero, F. Almenares Mendoza, and D. D\'iaz-S\'anchez, ``Implementing and evaluating post-quantum DNSSEC in CoreDNS,'' in \emph{Proc. 2025 Int. Conf. Modeling, Analysis and Simulation of Wireless and Mobile Systems (MSWiM)}, 2025, pp.~420--427, doi: 10.1109/MSWIM67937.2025.11308970.
+
+\bibitem{coredns} CoreDNS, ``CoreDNS,'' GitHub repository. [Online]. Available: \url{https://github.com/coredns/coredns}. [Accessed: Oct. 2, 2026].
+
+\bibitem{arrf} J. Goertzen and D. Stebila, ``Post-quantum signatures in DNSSEC via request-based fragmentation,'' in \emph{Proc. 14th Int. Conf. Post-Quantum Cryptography (PQCrypto 2023)}, Lecture Notes in Computer Science, vol.~14154, 2023, pp.~535--564, doi: 10.1007/978-3-031-40003-2\_20.
+
+\bibitem{rfc9250} C. Huitema, S. Dickinson, and A. Mankin, ``DNS over dedicated QUIC connections,'' RFC~9250, Internet Engineering Task Force (IETF), May 2022. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9250}. [Accessed: Oct. 2, 2026].
+%BIB-END
+
+\end{thebibliography}
+
+\end{document}
