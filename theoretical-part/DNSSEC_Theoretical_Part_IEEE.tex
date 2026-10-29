@@ -386,6 +386,305 @@ SPHINCS+-SHA2-128s~\cite{corednspqc} & Post-quantum (hash-based) & 32 & 7,856 \\
 \label{fig:sizes}
 \end{figure*}
 
+\subsection{DNS Message Size Constraints and Transport Behavior}
+
+\subsubsection{UDP Payload Limits and EDNS(0)}
+\label{sec:udp}
+
+DNS was originally specified to limit messages transported over UDP to
+512~octets~\cite{rfc1035}. The Extension Mechanisms for DNS, known as EDNS(0),
+were introduced to let a requestor advertise a larger UDP payload size that it
+is able to receive, allowing responders to send bigger UDP responses---for
+example, to carry DNSSEC signatures or multiple address records---without
+immediately falling back to TCP~\cite{rfc6891}. EDNS(0) does not, however,
+remove the underlying physical limits of the network path: RFC~6891 explicitly
+recommends choosing an EDNS buffer size with care, because advertising a very
+large value will reliably trigger IP-layer fragmentation, whereas advertising
+too small a value increases how often TCP is required~\cite{rfc6891}. In
+current operational practice, resolvers and authoritative servers frequently
+converge on a conservative EDNS buffer size of around 1,232~bytes, chosen so
+that a UDP response together with typical IPv6 and UDP headers still fits
+inside a common path MTU without fragmentation~\cite{rfc6891,cloudflaremtu}.
+
+The widely used 1,232-byte value is based on the minimum MTU of
+1,280~bytes~\cite{rfc9715}, which the IPv6 specification requires for every
+link in the Internet~\cite{rfc8200}; subtracting the 40-byte IPv6 header and
+the 8-byte UDP header gives the largest DNS payload that fits into such a
+packet~\cite{turbodns}:
+\begin{equation}
+1232 = 1280 - 40 - 8 .
+\label{eq:payload}
+\end{equation}
+More recently, RFC~9715 recommends a maximum DNS/UDP payload size of
+1,400~bytes as a default, while explicitly allowing smaller values such as
+1,232~bytes~\cite{rfc9715}. In either case, a response of size $S$ can only be
+sent in a single UDP datagram if it does not exceed the applicable payload
+limit $B$, which is determined by the UDP payload size advertised by the
+requestor~\cite{rfc6891} and the responder's own limits~\cite{rfc9715}; a
+response that does not fit is truncated and the TC flag is set
+(Section~\ref{sec:tcp})~\cite{rfc1035,rfc6891}.
+
+\subsubsection{IP Fragmentation and Its Reliability Problems}
+
+When a UDP datagram exceeds the path MTU---commonly around 1,500~bytes for an
+Ethernet-based path~\cite{cloudflaremtu}---it must be split into multiple IP
+fragments for transmission and reassembled by the receiver. This fragmentation
+is known to be unreliable in the public Internet: many firewalls and other
+middleboxes block fragmented IP packets outright, some devices do not implement
+fragment reassembly correctly, and fragmentation has additionally been shown to
+open cache-poisoning attack surfaces, because an attacker who can inject a
+single matching fragment may be able to manipulate the reassembled DNS
+message~\cite{rfc7766,fragpoison}. Because large post-quantum DNSSEC responses
+are substantially more likely to exceed the path MTU than classical,
+ECDSA-signed responses, they are correspondingly more exposed to these
+fragmentation-related failure modes~\cite{rfc7766,dnssecrealworld}. RFC~9715
+goes further and states that a DNS message receiver cannot trust fragmented UDP
+datagrams, recommending that requestors drop fragmented DNS/UDP responses
+without IP reassembly to avoid cache-poisoning attacks~\cite{rfc9715}. The
+authors of~\cite{retrofitting} additionally note, referring to a 2014
+study~\cite{dnssecrealworld}, that up to 10\% of resolvers may be unable to
+handle fragmented responses at all~\cite{retrofitting,dnssecrealworld}.
+
+\subsubsection{Truncation and Fallback to TCP}
+\label{sec:tcp}
+
+When a DNS server cannot fit a response into the UDP payload size negotiated
+via EDNS(0), it truncates the response and sets the TC (truncated) flag in the
+DNS header; a compliant client is expected to interpret this flag as an
+instruction to retry the same query over TCP~\cite{rfc6891,rfc7766}. TCP avoids
+the reliability problems of IP fragmentation, because TCP stacks generally
+perform Path MTU Discovery and segment data accordingly, and because a
+successful TCP handshake already implies that packets of that size can
+traverse the path~\cite{rfc7766}. This reliability, however, comes at a cost:
+establishing a new TCP connection adds at least one additional round-trip time
+(RTT) compared to a single UDP exchange, and it requires both client and server
+to maintain additional connection state~\cite{rfc7766}. RFC~7766 notes that
+this overhead can be partially amortized through connection reuse and query
+pipelining, but for DNS resolution scenarios where only a single query is being
+answered---which is common for DNSSEC lookups---the additional round trip is
+largely unavoidable~\cite{rfc7766}.
+
+The authors of~\cite{turbodns} describe the resulting message flow in detail:
+the initial UDP exchange is wasted because it only returns a truncated
+response, after which the TCP three-way handshake and the query and response
+over TCP add at least two further round trips~\cite{turbodns}. For a single
+query on a new connection, an oversized response therefore costs one wasted
+UDP round trip followed by at least two round trips over TCP~\cite{turbodns}.
+
+This is consistent with the round-trip counts reported in~\cite{doqfirstlook},
+whose authors expect one RTT for DNS over UDP and two RTTs (handshake plus
+query) for DNS over TCP when TCP is used directly~\cite{doqfirstlook}. A
+further round trip can be added when a response does not fit into the TCP
+initial congestion window: the authors of~\cite{turbodns} use an initial
+window of 10~segments with a maximum segment size (MSS) of
+1,220~bytes~\cite{turbodns}:
+\begin{equation}
+\mathit{initcwnd} = 10 \times 1220\,\text{B} = 12.2\,\text{kB} .
+\label{eq:initcwnd}
+\end{equation}
+They observe that SPHINCS+-128s and Dilithium-5 responses exceed this window
+and therefore need one round trip more than Falcon-512 or Dilithium-2
+responses~\cite{turbodns}. Packet loss affects large responses in a similar
+way: for a packet-loss rate of 1\% and SPHINCS+-128s, where a resolution
+session comprises about 46 DNS packets, the authors of~\cite{turbodns} estimate
+the probability that at least one packet is lost as~\cite{turbodns}
+\begin{equation}
+\Pr = 1 - (0.99)^{46} \approx 0.37
+\label{eq:loss}
+\end{equation}
+and conclude that such a session needs an additional round trip with a
+probability of about one third~\cite{turbodns}. Since larger responses consist
+of more packets, larger post-quantum responses are expected to be more
+sensitive to packet loss---one of the effects evaluated in the practical part
+of this project.
+
+\subsubsection{Size of Signed DNS Responses}
+\label{sec:respsize}
+
+The wire formats of DNS and DNSSEC records explain why key and signature sizes
+translate directly into message sizes. Every resource record consists of an
+owner name, the fixed-size fields TYPE (2~bytes), CLASS (2~bytes), TTL
+(4~bytes), and RDLENGTH (2~bytes), and its RDATA~\cite{rfc1035}. The RDATA of
+an RRSIG record consists of fixed-size fields---type covered (2~bytes),
+algorithm (1~byte), labels (1~byte), original TTL (4~bytes), signature
+expiration (4~bytes), signature inception (4~bytes), and key tag
+(2~bytes)---followed by the uncompressed signer's name and the complete
+signature; the RDATA of a DNSKEY record consists of flags (2~bytes), protocol
+(1~byte), and algorithm (1~byte), followed by the complete public
+key~\cite{rfc4034}. Every RRSIG therefore carries a full signature and every
+DNSKEY record a full public key.
+
+Cloudflare's published example illustrates the result: an ML-DSA-44-signed
+response from a test zone was 2,563~bytes long---above both the 1,232-byte
+recommendation~\cite{rfc9715} and the 1,500-byte Internet
+MTU~\cite{cloudflaremtu}---and was retrieved over TCP after
+truncation~\cite{cloudflareblog}. Negative answers are larger still, as
+responses for non-existent domains can contain three or more
+signatures~\cite{retrofitting}.
+
+\subsubsection{Amplification and Denial-of-Service Considerations}
+
+Response size is a security concern as well as a performance one. In
+reflection-based distributed denial-of-service (DDoS) attacks, the attacker
+exploits the fact that small DNS queries can trigger much larger responses;
+the authors of~\cite{dnssecddos} quantify this with the amplification factor,
+defined as the ratio of response size to query size~\cite{dnssecddos}:
+\begin{equation}
+A = \frac{S_\text{response}}{S_\text{query}} .
+\label{eq:amplification}
+\end{equation}
+In their large-scale measurement, DNSSEC-signed domains produced an average
+amplification factor of about 47 for ANY queries, compared with about 6 for
+unsigned domains, although for other common query types the picture was more
+nuanced~\cite{dnssecddos}. These measurements date from 2014; since then,
+RFC~8482 has allowed DNS servers to answer queries with QTYPE=ANY with
+minimal-sized responses, noting that ANY queries are frequently used to
+exploit the amplification potential of DNS servers and that small responses
+make servers less attractive amplifiers~\cite{rfc8482}. The authors
+of~\cite{retrofitting} likewise list the attractiveness of large DNSSEC records
+for DDoS amplification as a reason why signatures should remain
+small~\cite{retrofitting}. Since post-quantum signatures substantially increase
+the response size (Section~\ref{sec:respsize}), the transport mechanism also
+determines how much of this potential is exposed: the TCP handshake generally
+prevents address spoofing and thus the reflection/amplification attacks that
+affect UDP~\cite{rfc7766}, and DoQ implementations must limit the worst-case
+amplification to a factor of~3~\cite{rfc9250}.
+
+\subsection{Transport Mechanisms for Large Post-Quantum DNSSEC Responses}
+
+\subsubsection{TCP Fallback for Oversized Responses}
+
+The most directly deployable mitigation for oversized post-quantum DNSSEC
+responses is to rely on the existing truncation-and-TCP-fallback mechanism
+described above: a resolver first attempts the query over UDP and, if the
+response is truncated, repeats the query over TCP~\cite{rfc6891,rfc7766}. This
+is also the approach used in Cloudflare's experimental deployment of ML-DSA-44
+validation on its 1.1.1.1 resolver~\cite{cloudflareblog} and in an independent
+open-source implementation that extends the CoreDNS authoritative server with
+on-the-fly PQC signing~\cite{corednspqc,coredns}. Its main advantage is that it
+requires no changes to the core DNS wire protocol; its main disadvantage is the
+additional round trip and connection state associated with every oversized
+query, which this project measures explicitly.
+
+\subsubsection{Application-Layer Request-Based Fragmentation (ARRF)}
+
+As an alternative to both IP fragmentation and TCP fallback, the authors
+of~\cite{arrf} propose ARRF, which fragments oversized resource records at the
+DNS protocol layer itself rather than at the IP layer~\cite{arrf}. In this
+scheme, an initial UDP response contains only a truncated fragment of the
+oversized record together with an indication that further fragments exist; the
+requestor then issues explicit follow-up queries to retrieve the remaining
+fragments, which are reassembled once all parts have arrived. Because
+fragmentation and reassembly happen above the transport layer, ARRF avoids the
+specific reliability problems associated with IP-layer fragmentation, while
+still allowing the overall exchange to remain UDP-based for each individual
+request~\cite{arrf}. Its trade-off is a potentially higher number of round
+trips compared to a single TCP connection, depending on how many fragments are
+required. In more detail, the responder replaces oversized records in place by
+RRFRAG pseudo-records, which carry an identifier of the fragmented record, the
+byte offset and size of the fragment, and the total record size; this first
+response acts as a ``map'' of the complete message and sets the TC flag for
+backward compatibility~\cite{arrf}. The requestor then asks for the missing
+fragments either sequentially or, in the parallel (``batched'') mode, all at
+once after the map has arrived~\cite{arrf}. For an original response of size
+$S$ and a maximum message size $M$, the authors of~\cite{arrf} give the number
+of round trips required by ARRF as
+\begin{equation}
+R_\text{ARRF} = \left\lceil \frac{S}{M} \right\rceil .
+\label{eq:arrf}
+\end{equation}
+With the exception of the initial round trip, these round trips can be
+performed in parallel, which reduces the overall resolution
+time~\cite{arrf}; parallel ARRF therefore needs a minimum of two round
+trips~\cite{turbodns}. The authors of~\cite{arrf} also point out limitations:
+middleboxes that inspect resource record types might reject RRFRAGs, packet
+loss was not evaluated, and nothing prevents an on-path attacker from changing
+the RRSIZE fields in the initial response, so that the requestor allocates
+memory for the intermediate state and can only detect the attack when
+verifying the signature~\cite{arrf}.
+
+\subsubsection{DNS over QUIC (DoQ)}
+
+A third alternative is to move the DNS exchange entirely onto DoQ, which
+carries DNS messages over dedicated, encrypted QUIC connections instead of
+plain UDP or TCP~\cite{rfc9250}. Because QUIC implements its own stream-based
+delivery, loss recovery, and connection migration logic on top of UDP, large
+DNSSEC responses can be delivered reliably without being exposed to IP-layer
+fragmentation in the same way as plain UDP traffic. This reliability, however,
+is obtained at the cost of a QUIC connection and TLS handshake, which---analogous
+to the TCP case---adds round-trip overhead on a cold connection, while a warm,
+already-established DoQ connection can amortize this cost across multiple
+subsequent queries. This project evaluates DoQ as a time-permitting extension
+once the TCP-fallback and, where feasible, ARRF-based evaluations have been
+completed. RFC~9250 explicitly names as a design goal a transport that does not
+impose path MTU limitations on the size of DNS responses; DoQ ignores the
+EDNS(0) UDP payload size parameter, always assumes a maximum message size of
+65,535~bytes, and uses the dedicated UDP port~853~\cite{rfc9250}. Because the
+QUIC handshake combines the negotiation of cryptographic and transport
+parameters~\cite{rfc9000}, a new DoQ connection needs one handshake round trip
+before the query is sent, i.e., two round trips in total, compared with three
+for DNS over TLS (DoT) with TLS~1.3~\cite{doqfirstlook}. On resumed
+connections, clients may use 0-RTT data, but only for replayable transactions
+such as standard queries~\cite{rfc9250}. In the measurements reported
+in~\cite{doqfirstlook}, DoQ outperformed DoT and DNS over HTTPS (DoH) in
+response time, but about 40\% of DoQ handshakes required an additional round
+trip because resolvers enforced QUIC's anti-amplification
+limit~\cite{doqfirstlook}, under which a server may send at most three times as
+many bytes as it has received from a not-yet-validated
+address~\cite{rfc9000}.
+
+\subsubsection{Comparison of Transport Mechanisms}
+\label{sec:comparison}
+
+Fig.~\ref{fig:flows} contrasts the message flows of the mechanisms discussed
+above for a single query. On a new connection, DNS over UDP needs one round
+trip~\cite{doqfirstlook}; TCP fallback costs one wasted UDP round trip followed
+by at least two round trips over TCP~\cite{turbodns}; parallel ARRF needs a
+minimum of two round trips~\cite{turbodns}; and DoQ needs one handshake round
+trip followed by the query, i.e., two round trips~\cite{doqfirstlook}, whereas
+clients and servers should reuse a single QUIC connection for multiple
+queries, so that the handshake is not repeated~\cite{rfc9250}. These counts
+ignore processing and serialization delays as well as additional round trips
+caused by packet loss or by exceeding the initial congestion window
+(Section~\ref{sec:tcp}).
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{figures/message_flows.png}
+\caption{Simplified message sequence diagrams for (a) classical DNSSEC over
+UDP, (b) post-quantum DNSSEC with truncation and TCP fallback, (c) ARRF in
+parallel mode, and (d) DoQ on a new connection.}
+\label{fig:flows}
+\end{figure*}
+
+Table~\ref{tab:transports} summarizes the main properties of each mechanism,
+including two further UDP-based proposals discussed in
+Section~\ref{sec:related}: QNAME-Based Fragmentation (QBF) and TurboDNS.
+
+\begin{table*}[!t]
+\caption{Transport Mechanisms for Large Post-Quantum DNSSEC Responses}
+\label{tab:transports}
+\centering
+\footnotesize
+\begin{tabularx}{\textwidth}{|X|p{0.13\textwidth}|X|X|X|}
+\hline
+\textbf{Mechanism} & \textbf{Round trips (new connection)} & \textbf{Avoids IP fragmentation} & \textbf{Changes required} & \textbf{Main drawback} \\
+\hline
+UDP + EDNS(0) (classical)~\cite{rfc1035,rfc6891,rfc9715} & 1 & Only if the response fits the path MTU & None & Response is truncated (TC~=~1) once it exceeds the payload limit \\
+\hline
+UDP $\rightarrow$ TC $\rightarrow$ TCP fallback~\cite{rfc7766,turbodns} & 1 wasted (UDP) + ${\geq}\,2$ (TCP) & Yes (TCP stacks generally implement Path MTU Discovery) & None (TCP support already required) & Extra round trips and connection state \\
+\hline
+ARRF (parallel)~\cite{arrf} & ${\geq}\,2$ & Yes (fragments ${\leq}\,M$) & Resolver and name server (RRFRAG) & Possible rejection by middleboxes; RRSIZE manipulation by on-path attackers \\
+\hline
+QBF (parallel 1-RTT)~\cite{qbf} & ${\approx}\,1$ & Yes & Resolver- and server-side daemon & Fragment count estimated in advance; no loss evaluation \\
+\hline
+TurboDNS~\cite{turbodns} & Removes 2 RTTs from TCP fallback & Yes (TCP) & Resolver and name server (TD-Cookie) & Must be deployed on both resolvers and name servers \\
+\hline
+DoQ~\cite{rfc9250,rfc9000,doqfirstlook} & ${\approx}\,2$ (cold), ${\approx}\,1$ (warm) & Yes (no path-MTU limit on DNS messages) & DoQ support on both sides (UDP port 853) & Handshake; amplification limit may add 1 RTT \\
+\hline
+\end{tabularx}
+\end{table*}
+
 \begin{thebibliography}{00}
 
 %BIB-BEGIN
@@ -434,6 +733,20 @@ SPHINCS+-SHA2-128s~\cite{corednspqc} & Post-quantum (hash-based) & 32 & 7,856 \\
 \bibitem{rfc8080} O. Sury and R. Edmonds, ``Edwards-curve digital security algorithm (EdDSA) for DNSSEC,'' RFC~8080, Internet Engineering Task Force (IETF), Feb. 2017. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc8080}. [Accessed: Oct. 29, 2026].
 
 \bibitem{rfc9715} K. Fujiwara and P. Vixie, ``IP fragmentation avoidance in DNS over UDP,'' RFC~9715, Internet Engineering Task Force (IETF), Jan. 2025. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9715}. [Accessed: Oct. 29, 2026].
+
+\bibitem{rfc8200} S. Deering and R. Hinden, ``Internet protocol, version 6 (IPv6) specification,'' RFC~8200, STD~86, Internet Engineering Task Force (IETF), Jul. 2017. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc8200}. [Accessed: Oct. 29, 2026].
+
+\bibitem{dnssecrealworld} G. van den Broek, R. van Rijswijk-Deij, A. Sperotto, and A. Pras, ``DNSSEC meets real world: Dealing with unreachability caused by fragmentation,'' \emph{IEEE Commun. Mag.}, vol.~52, no.~4, pp.~154--160, 2014, doi: 10.1109/MCOM.2014.6828880.
+
+\bibitem{doqfirstlook} M. Kosek, T. V. Doan, M. Granderath, and V. Bajpai, ``One to rule them all? A first look at DNS over QUIC,'' in \emph{Passive and Active Measurement (PAM 2022)}, Lecture Notes in Computer Science. Cham, Switzerland: Springer, 2022, pp.~537--551, doi: 10.1007/978-3-030-98785-5\_24.
+
+\bibitem{dnssecddos} R. van Rijswijk-Deij, A. Sperotto, and A. Pras, ``DNSSEC and its potential for DDoS attacks: A comprehensive measurement study,'' in \emph{Proc. ACM Internet Measurement Conf. (IMC '14)}, Vancouver, BC, Canada, 2014, pp.~449--460, doi: 10.1145/2663716.2663731.
+
+\bibitem{rfc8482} J. Abley, O. Gudmundsson, M. Majkowski, and E. Hunt, ``Providing minimal-sized responses to DNS queries that have QTYPE=ANY,'' RFC~8482, Internet Engineering Task Force (IETF), Jan. 2019. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc8482}. [Accessed: Oct. 29, 2026].
+
+\bibitem{rfc9000} J. Iyengar and M. Thomson, Eds., ``QUIC: A UDP-based multiplexed and secure transport,'' RFC~9000, Internet Engineering Task Force (IETF), May 2021. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9000}. [Accessed: Oct. 29, 2026].
+
+\bibitem{qbf} A. S. Rawat and M. P. Jhanwar, ``Post-quantum DNSSEC over UDP via QNAME-based fragmentation,'' in \emph{Security, Privacy, and Applied Cryptography Engineering (SPACE 2023)}, Lecture Notes in Computer Science. Cham, Switzerland: Springer, 2024, pp.~66--85, doi: 10.1007/978-3-031-51583-5\_4.
 %BIB-END
 
 \end{thebibliography}
