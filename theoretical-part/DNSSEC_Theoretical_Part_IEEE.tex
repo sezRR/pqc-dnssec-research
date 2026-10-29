@@ -181,6 +181,211 @@ state of the art and related work. Section~\ref{sec:conclusion} closes the
 theoretical part with a brief summary and a transition toward the practical
 implementation and evaluation that are reported in Part~2 of this project.
 
+\section{Theoretical Foundations}
+\label{sec:foundations}
+
+\subsection{The Domain Name System and Its Security Model}
+
+The Domain Name System provides a globally distributed, hierarchical naming
+service that maps domain names to resource records, most commonly IP
+addresses~\cite{rfc1035}. A DNS resolver issues a query for a given name and
+record type and receives a response from an authoritative name server,
+typically via a recursive resolver that caches intermediate results. In its
+original specification, DNS offers no cryptographic guarantee that a received
+response was actually produced by the zone's authoritative server or that it
+was not modified or injected by an on-path or off-path attacker~\cite{rfc4033}.
+This absence of origin authentication is the central weakness that DNSSEC was
+designed to address.
+
+\subsection{DNS Security Extensions (DNSSEC)}
+
+\subsubsection{Core Resource Records and the Chain of Trust}
+
+DNSSEC, as specified across RFC~4033, RFC~4034, and RFC~4035, extends DNS with
+a small set of new resource record types and protocol behaviors that together
+provide data origin authentication and data
+integrity~\cite{rfc4033,rfc4034,rfc4035}. A zone owner signs its resource
+record sets (RRsets) with a private key, producing RRSIG records that contain
+the resulting digital signature; the corresponding public key is published in a
+DNSKEY record. A DS (Delegation Signer) record, stored in the parent zone,
+contains a cryptographic hash of the child zone's DNSKEY and thereby links the
+child's key material into the chain of trust that ultimately terminates at the
+signed DNS root. A validating resolver can therefore follow this chain from the
+root down to the queried name, verifying each signature along the way, to
+establish that a response is authentic. Importantly, DNSSEC does not encrypt
+DNS traffic and therefore provides no confidentiality; its guarantees are
+limited to authenticity and integrity~\cite{rfc4033}.
+
+RFC~4033 additionally distinguishes two roles for zone keys: a Key Signing Key
+(KSK) corresponds to a private key used to sign one or more other
+authentication keys of a zone, whereas a Zone Signing Key (ZSK) corresponds to
+a private key used to sign the zone itself; typically, the KSK signs the DNSKEY
+RRset containing the ZSK, and the ZSK signs the other zone
+data~\cite{rfc4033}. This distinction is purely operational: validation does
+not differentiate between the two roles, and a single key may serve as
+both~\cite{rfc4033}. The DS RRset in the parent zone indicates the key(s) used
+to self-sign the child's DNSKEY RRset, so the typical authentication chain is
+$\text{DNSKEY} \rightarrow [\text{DS} \rightarrow \text{DNSKEY}]^{*}
+\rightarrow \text{RRset}$~\cite{rfc4033}. Fig.~\ref{fig:chain} illustrates how
+DS, DNSKEY, and RRSIG records combine into the chain of
+trust~\cite{rfc4033,rfc4034,rfc4035}. Two properties of this design are
+directly relevant for this project. First, when a query has the DO bit set, a
+security-aware authoritative server should send the RRSIG records needed to
+authenticate the RRsets in the response and keep each RRset together with its
+RRSIG(s)~\cite{rfc4035}, while the DNSKEY RRset carries the complete public
+keys of the zone~\cite{rfc4034}; the sizes of signatures and keys therefore
+translate directly into the size of DNS messages. Second, a sender must not use
+DNS name compression on the Signer's Name field of an RRSIG record, so this
+field always contributes its full length~\cite{rfc4034}.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.82\textwidth]{figures/chain_of_trust.png}
+\caption{Simplified DNSSEC chain of trust with the typical KSK/ZSK split.}
+\label{fig:chain}
+\end{figure*}
+
+\subsubsection{Adoption and Current Deployment Status}
+
+Although DNSSEC is regarded as the current best practice for DNS origin
+authentication, and although the DNS root zone and many top-level domains
+(TLDs) are signed, end-to-end deployment below the TLD level remains limited:
+current estimates indicate that fewer than ten percent of website domain names
+are DNSSEC-signed and that only roughly a third of queries handled by recursive
+resolvers are actually validated~\cite{rfc9364}. This uneven deployment is
+relevant to the present project because any additional transport overhead
+introduced by post-quantum signatures could further discourage adoption if it
+is not kept within acceptable latency and reliability bounds. Support for TCP,
+the fallback transport, is also not universal: according to measurements
+published in 2016 and cited by the authors of~\cite{retrofitting}, about 11\%
+of name servers lacked TCP support~\cite{retrofitting}.
+
+\subsection{Cryptographic Signature Algorithms and the Quantum Threat}
+
+\subsubsection{Classical Signature Algorithms Used in DNSSEC}
+\label{sec:classical}
+
+The DNSSEC specifications allow multiple signature algorithms to be registered
+and used, and operational guidance on which algorithms should be implemented
+and used for signing or validation is maintained separately from the core
+protocol documents~\cite{rfc8624}. In current practice, RSA and ECDSA are the
+most widely deployed choices~\cite{rfc6605,rfc8624}. ECDSA in particular is
+attractive for DNS because it produces comparatively small signatures and
+public keys, which keeps DNSSEC-signed responses close to the message sizes
+that classical, unsigned DNS traffic already uses. For this reason, ECDSA is
+used as the classical baseline algorithm in this project.
+
+Concretely, an ECDSA P-256 (DNSSEC algorithm~13) signature is encoded as the
+concatenation $r \,|\, s$ of two 32-octet integers, i.e., 64~octets~\cite{rfc6605},
+and the public key is the uncompressed curve point $x \,|\, y$, which occupies
+64~bytes~\cite{rfc6605,cloudflareblog}; RSA-2048 with SHA-256 (algorithm~8)
+uses 256-byte signatures and 260-byte public keys~\cite{cloudflareblog}. The
+Edwards-curve algorithm Ed25519 is even more compact, with 32-octet public keys
+and 64-octet signatures~\cite{rfc8080}. All of these values remain far below
+the 1,232-byte UDP payload limit discussed in Section~\ref{sec:udp}.
+
+\subsubsection{The Quantum Threat to Classical Public-Key Cryptography}
+
+Both RSA and ECDSA rely on mathematical problems---integer factorization and
+the elliptic-curve discrete logarithm problem, respectively---that are believed
+to be intractable for classical computers at the key sizes used in practice. A
+sufficiently large quantum computer running Shor's algorithm~\cite{shor} would,
+however, be able to solve both problems in polynomial time. If such a quantum
+computer became available, an attacker could use it to derive the private
+signing key of a DNSSEC zone (or otherwise forge valid-looking signatures) from
+publicly available information, defeating the authentication guarantees that
+DNSSEC is meant to provide. Because DNS is expected to remain a core piece of
+Internet infrastructure for the foreseeable future, and because there is
+currently no widely deployed alternative to it, this motivates investigating
+post-quantum alternatives for DNSSEC signing well ahead of the point at which
+such an attack becomes practical~\cite{fips204}.
+
+\subsubsection{Post-Quantum Cryptography and the ML-DSA Standard}
+\label{sec:mldsa}
+
+In August 2024, NIST finalized FIPS~204, the Module-Lattice-Based Digital
+Signature Standard (ML-DSA), as one of the first standardized post-quantum
+digital signature algorithms~\cite{fips204}. ML-DSA's security is based on the
+conjectured hardness of problems over module lattices, specifically variants of
+the Module Learning With Errors and Module Short Integer Solution problems, for
+which no efficient quantum algorithm is currently known. FIPS~204 defines three
+parameter sets, ML-DSA-44, ML-DSA-65, and ML-DSA-87, offering increasing
+security levels at increasing signature and key sizes~\cite{fips204}. An
+Internet-Draft from the DNS Operations working group specifies how ML-DSA-44 can concretely be carried in DNSSEC's DNSKEY and RRSIG
+resource records, and states that an ML-DSA-44 public key occupies
+1,312~octets while a corresponding signature occupies
+2,420~octets~\cite{mldsadraft}. ML-DSA-44 is chosen in that document, and
+consequently also in this project, because it offers the smallest keys and
+signatures among the three ML-DSA parameter sets while still targeting NIST
+security category~2, making it the most DNS-friendly of the standardized
+options~\cite{mldsadraft}. This Internet-Draft is, at the time of writing,
+still a work in progress and has not yet been published as an RFC; it is used
+here as the most concrete and current specification of how ML-DSA integrates
+with DNSSEC, but its details may still change before final standardization.
+
+Table~\ref{tab:sizes} and Fig.~\ref{fig:sizes} place ML-DSA-44 in the context
+of other classical and post-quantum signature algorithms; the sizes are taken
+from~\cite{rfc6605,fips204,mldsadraft,cloudflareblog,corednspqc,rfc8080}, and
+the thresholds marked in Fig.~\ref{fig:sizes} are the 1,232-byte EDNS(0)
+recommendation~\cite{rfc9715} and the ${\approx}1{,}500$-byte Internet
+MTU~\cite{cloudflaremtu}. FIPS~204 states that ML-DSA is derived from
+CRYSTALS-Dilithium, one of the schemes selected in the NIST post-quantum
+standardization process~\cite{fips204}. Among the post-quantum schemes
+integrated into CoreDNS in~\cite{corednspqc}, Falcon-512 has a considerably
+smaller signature (752~bytes) than ML-DSA-44 (2,420~bytes), while
+SPHINCS+-128s combines a very small 32-byte public key with a 7,856-byte
+signature~\cite{corednspqc}. The same study reports that all evaluated
+post-quantum schemes exceed typical UDP size limits and therefore force the use
+of TCP, whereas the classical algorithms stay within these
+limits~\cite{corednspqc}.
+
+The authors of~\cite{retrofitting} formulated explicit requirements for DNSSEC
+signature algorithms, the most important being that a signature should not
+exceed 1,232~bytes; further requirements are a validation speed of at least
+1,000 signatures per second and a signing speed of at least 100 signatures per
+second; public keys of up to 64~kB are considered good, whereas larger keys are
+accepted only conditionally~\cite{retrofitting}. Every ML-DSA parameter set
+already violates the first requirement on signature size alone, which
+motivates the focus of this project on how the resulting large responses are
+transported rather than on the choice of signature algorithm alone.
+
+\begin{table}[!t]
+\caption{Public-Key and Signature Sizes of Signature Algorithms Relevant to DNSSEC}
+\label{tab:sizes}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{2.5pt}
+\begin{tabular}{|>{\raggedright\arraybackslash}p{0.37\columnwidth}|>{\raggedright\arraybackslash}p{0.27\columnwidth}|>{\raggedleft\arraybackslash}p{0.11\columnwidth}|>{\raggedleft\arraybackslash}p{0.15\columnwidth}|}
+\hline
+\textbf{Algorithm} & \textbf{Family} & \textbf{Public key (B)} & \textbf{Signature (B)} \\
+\hline
+Ed25519~\cite{rfc8080} & Classical (elliptic curve) & 32 & 64 \\
+\hline
+ECDSA P-256~\cite{rfc6605,cloudflareblog} & Classical (elliptic curve) & 64 & 64 \\
+\hline
+RSA-2048/SHA-256~\cite{cloudflareblog} & Classical (RSA) & 260 & 256 \\
+\hline
+Falcon-512~\cite{corednspqc} & Post-quantum (lattice) & 897 & 752 (666 padded) \\
+\hline
+ML-DSA-44~\cite{fips204,mldsadraft,corednspqc} & Post-quantum (lattice) & 1,312 & 2,420 \\
+\hline
+ML-DSA-65~\cite{corednspqc} & Post-quantum (lattice) & 1,952 & 3,309 \\
+\hline
+ML-DSA-87~\cite{corednspqc} & Post-quantum (lattice) & 2,592 & 4,627 \\
+\hline
+SPHINCS+-SHA2-128s~\cite{corednspqc} & Post-quantum (hash-based) & 32 & 7,856 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=0.85\textwidth]{figures/key_signature_sizes.png}
+\caption{Public-key and signature sizes (logarithmic scale) compared with the
+1,232-byte EDNS(0) recommendation and the ${\approx}1{,}500$-byte Internet MTU.}
+\label{fig:sizes}
+\end{figure*}
+
 \begin{thebibliography}{00}
 
 %BIB-BEGIN
@@ -223,6 +428,12 @@ implementation and evaluation that are reported in Part~2 of this project.
 \bibitem{arrf} J. Goertzen and D. Stebila, ``Post-quantum signatures in DNSSEC via request-based fragmentation,'' in \emph{Proc. 14th Int. Conf. Post-Quantum Cryptography (PQCrypto 2023)}, Lecture Notes in Computer Science, vol.~14154, 2023, pp.~535--564, doi: 10.1007/978-3-031-40003-2\_20.
 
 \bibitem{rfc9250} C. Huitema, S. Dickinson, and A. Mankin, ``DNS over dedicated QUIC connections,'' RFC~9250, Internet Engineering Task Force (IETF), May 2022. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9250}. [Accessed: Oct. 2, 2026].
+
+\bibitem{retrofitting} M. M\"uller, J. de Jong, M. van Heesch, B. Overeinder, and R. van Rijswijk-Deij, ``Retrofitting post-quantum cryptography in Internet protocols: A case study of DNSSEC,'' \emph{ACM SIGCOMM Comput. Commun. Rev.}, vol.~50, no.~4, pp.~49--57, Oct. 2020, doi: 10.1145/3431832.3431838.
+
+\bibitem{rfc8080} O. Sury and R. Edmonds, ``Edwards-curve digital security algorithm (EdDSA) for DNSSEC,'' RFC~8080, Internet Engineering Task Force (IETF), Feb. 2017. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc8080}. [Accessed: Oct. 29, 2026].
+
+\bibitem{rfc9715} K. Fujiwara and P. Vixie, ``IP fragmentation avoidance in DNS over UDP,'' RFC~9715, Internet Engineering Task Force (IETF), Jan. 2025. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9715}. [Accessed: Oct. 29, 2026].
 %BIB-END
 
 \end{thebibliography}
