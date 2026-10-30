@@ -685,6 +685,169 @@ DoQ~\cite{rfc9250,rfc9000,doqfirstlook} & ${\approx}\,2$ (cold), ${\approx}\,1$ 
 \end{tabularx}
 \end{table*}
 
+\section{State of the Art and Related Work}
+\label{sec:related}
+
+The transition of DNSSEC to PQC represents a fundamental protocol-redesign
+problem rather than a simple algorithm substitution. Standardized post-quantum
+signature schemes such as ML-DSA-44 (2,420-byte signatures) and SLH-DSA
+inherently exceed the operational 1,232-byte UDP payload threshold, triggering
+significant transport and performance degradation across the DNS ecosystem.
+Recent literature has explored several transport mechanisms, structural
+optimizations, and prototype implementations to evaluate and mitigate these
+constraints.
+
+The authors of~\cite{retrofitting} describe their work as the first study of
+the applicability of quantum-safe signature algorithms to DNSSEC; they
+evaluated the third-round candidates of the NIST post-quantum standardization
+process against DNSSEC-specific requirements (Section~\ref{sec:mldsa}). Only
+three algorithms---Falcon-512, RedGeMSS128, and Rainbow-Ia---partially met
+these requirements; the latter two have very small signatures but public keys
+of 375~kB and 158~kB, respectively~\cite{retrofitting}. The authors concluded
+that no algorithm fits all requirements perfectly and proposed protocol
+adaptations, namely increased TCP support and out-of-band key
+distribution~\cite{retrofitting}. The situation has changed since then: NIST
+did not select Rainbow for standardization after an attack recovered private
+keys for security category~1 parameters in a little over two days on a single
+laptop, and GeMSS was eliminated after an attack dramatically reduced its
+security~\cite{nistir8413}. Of the three algorithms identified
+in~\cite{retrofitting}, only Falcon was selected for standardization, together
+with CRYSTALS-Dilithium and SPHINCS+~\cite{nistir8413}.
+
+Standard DNS over UDP relies on EDNS(0) buffer negotiation, but oversized
+post-quantum responses force authoritative servers to truncate messages and
+instruct resolvers to fall back to TCP~\cite{rfc7766}. Cloudflare's real-world
+deployment of ML-DSA-44 validation on its 1.1.1.1 resolver demonstrated that
+TCP fallback handles large DNSKEY responses reliably, albeit at the cost of
+additional RTT latency~\cite{cloudflareblog}. To optimize connection
+establishment overhead, the authors of~\cite{turbodns} introduced TurboDNS,
+which accelerates TCP fallback by reusing stateless cookies (TD-Cookies) to
+bypass unnecessary initial handshake steps and reduce resolution
+latency~\cite{turbodns}. In parallel, single-round-trip UDP fragmentation
+mechanisms such as QNAME-Based Fragmentation (QBF)~\cite{qbf} have been
+proposed to eliminate TCP connection setup entirely, achieving resolution times
+of about 45~ms at 10~ms one-way latency without packet loss~\cite{turbodns}. In
+the TurboDNS evaluation, the mean resolution time of a Falcon-512-signed A
+query decreased from 89~ms with standard TCP fallback to 45~ms at 10~ms one-way
+latency, practically matching the 44~ms of ECDSA P-256 over UDP; QBF achieved
+comparable times~\cite{turbodns}. Fig.~\ref{fig:restimes} shows the
+corresponding mean resolution times reported in~\cite{turbodns} for both
+network settings; Dilithium-2 there denotes CRYSTALS-Dilithium, on which ML-DSA
+is based~\cite{fips204}. QBF itself fragments and reassembles large
+post-quantum DNSSEC messages over UDP using only standard DNS records: the
+requestor obtains the remaining fragments with specially formed query names,
+and in its parallel 1-RTT mode it requests all fragments at once~\cite{qbf}.
+Building on QBF-style fragmentation, the authors of~\cite{doublesigned}
+combine a classical and a post-quantum signature in each response, so that a
+response is accepted only if both verify, and report that this adds less than
+9\% to the mean resolution time compared with post-quantum signatures
+alone~\cite{doublesigned}.
+
+\begin{figure*}[!t]
+\centering
+\includegraphics[width=\textwidth]{figures/resolution_times.png}
+\caption{Mean resolution times for QTYPE~A queries for different signature
+algorithms and transport mechanisms under two network settings, as reported
+in~\cite{turbodns}. The dotted line marks the ECDSA P-256 baseline.}
+\label{fig:restimes}
+\end{figure*}
+
+To avoid TCP connection setup overhead while remaining over UDP, the authors
+of~\cite{arrf} introduced ARRF, which fragments oversized DNSSEC records at the
+application layer rather than relying on IP-layer
+fragmentation~\cite{arrf}. However, security evaluations have highlighted
+significant vulnerabilities in application-layer fragmentation: the authors
+of~\cite{arrfsec} analyzed a memory-exhaustion vulnerability in ARRF and
+proposed a mitigation with minimal performance cost~\cite{arrfsec}, while the
+authors of~\cite{fragmisassoc} addressed fragment mis-association and spoofing
+threats by introducing cryptographic commit-and-reveal
+chains~\cite{fragmisassoc}. Alternatively, transport protocols like
+DoQ~\cite{rfc9250} encapsulate DNS traffic within encrypted QUIC streams,
+eliminating IP fragmentation issues entirely through native stream
+multiplexing and congestion control. Quantitatively, the authors
+of~\cite{arrf} report that parallel ARRF was about 20\% faster than TCP
+fallback; for Dilithium-2, for example, the resolution time decreased from
+82.24~ms to 62.52~ms at 10~ms latency and 50~MB/s, and from 802.4~ms to
+601.7~ms at 100~ms latency~\cite{arrf}. ARRF also transferred slightly less
+data than TCP fallback for Falcon-512 and Dilithium-2, whereas for SPHINCS+
+TCP was more data-efficient because of the per-fragment RRFRAG
+overhead~\cite{arrf}; packet loss was not evaluated~\cite{arrf}. For DoQ, the
+authors of~\cite{doqfirstlook} measured a median handshake time of 235~ms
+compared with 156~ms for DNS over TCP and about 322~ms for DoT and DoH, from a
+single vantage point and without DNSSEC-specific
+workloads~\cite{doqfirstlook}.
+
+Recent empirical research has focused on prototype implementations and
+algorithm trade-offs. The authors of~\cite{corednspqc} extended CoreDNS with an
+open-source plugin supporting multiple post-quantum signature schemes---including
+ML-DSA, Falcon, SPHINCS+, MAYO, and SNOVA---providing benchmark evaluations
+of signing overhead and CPU utilization~\cite{corednspqc}. Their findings
+indicate that while Falcon-512 yields superior transport performance due to
+compact signatures, ML-DSA-44 offers lower computational complexity during key
+generation and signing~\cite{corednspqc}. SPHINCS+ presents the largest
+transport overhead, exceeding the initial congestion window (initcwnd) and
+requiring additional TCP round trips~\cite{turbodns}. Similarly, the authors
+of~\cite{differentiated} introduced a differentiated role-based algorithm
+assignment scheme for ZSKs and KSKs to optimize public key and signature size
+trade-offs~\cite{differentiated}, while Verisign and IETF proposals have
+explored Merkle Tree Ladder (MTL) modes to amortize signature sizes across
+multiple DNS responses~\cite{mtldraft}. The authors of~\cite{differentiated}
+evaluated 18 configurations on a containerized testbed validated against the
+structure of AFNIC's \texttt{.fr} top-level domain and report that
+differentiated KSK/ZSK configurations add about 1.28 to 1.52 times the latency
+of classical ECDSA, while hybrid concatenation of classical and post-quantum
+signatures adds roughly 7\% to 19\% overhead~\cite{differentiated}. The MTL
+mode was introduced in~\cite{mtl}, whose authors show that, in a scenario with
+an initial series of 10,000 signatures, condensed signatures of 248--472~bytes
+can replace NIST PQC signatures of 666--49,856~bytes, depending on the security
+level~\cite{mtl}; an Internet-Draft by Verisign Labs specifies its use with
+SLH-DSA in DNSSEC, where resolvers request the larger full signatures only
+occasionally and preferably over TCP, TLS, or QUIC~\cite{mtldraft}.
+
+Table~\ref{tab:related} summarizes the experimental work discussed in this
+section. Two observations emerge. First, most studies compare a newly proposed
+mechanism against plain TCP fallback, but under different testbeds, software
+versions, and network settings, which makes their absolute numbers difficult to
+compare. Second, the evaluations of ARRF and QBF explicitly do not consider
+packet loss~\cite{arrf,qbf}, and DoQ has so far been measured as an encrypted
+DNS transport rather than as a carrier for post-quantum
+DNSSEC~\cite{doqfirstlook}. A controlled comparison of TCP fallback, ARRF, and
+DoQ for ML-DSA-44 against an ECDSA baseline under varying latency and packet
+loss, as pursued in this project, therefore complements the existing
+literature.
+
+\begin{table*}[!t]
+\caption{Overview of Related Experimental Work on Post-Quantum DNSSEC Transport}
+\label{tab:related}
+\centering
+\footnotesize
+\begin{tabularx}{\textwidth}{|X|X|X|X|}
+\hline
+\textbf{Mechanism} & \textbf{Algorithms} & \textbf{Setting} & \textbf{Key result} \\
+\hline
+Requirements analysis~\cite{retrofitting} & NIST round-3 candidates & Analytical evaluation and benchmarks & No algorithm fits all requirements; three partially suitable (Rainbow, GeMSS later broken~\cite{nistir8413}) \\
+\hline
+ARRF vs.\ TCP fallback~\cite{arrf} & Falcon-512, Dilithium-2, SPHINCS+ & BIND~9 + daemon, Docker; 10/100~ms; packet loss not evaluated & Parallel ARRF ${\approx}\,20\%$ faster than TCP fallback \\
+\hline
+QBF~\cite{qbf} & Falcon-512, Dilithium-2, SPHINCS+ & Docker; 50~Mbps, 10~ms; no loss experiments & Parallel 1-RTT QBF ${\approx}\,50\%$ faster than standard DNS \\
+\hline
+TurboDNS~\cite{turbodns} & Falcon, Dilithium, SPHINCS+ & 10~ms/100~Mbps and 100~ms/1~Mbps & Falcon-512: 89~ms $\rightarrow$ 45~ms (ECDSA: 44~ms) \\
+\hline
+On-the-fly signing in CoreDNS, TCP~\cite{corednspqc} & 13 PQC variants incl.\ ML-DSA-44 & CoreDNS plugin & All PQC responses exceed UDP limits; ${\approx}\,3$--4~MB extra memory \\
+\hline
+Differentiated KSK/ZSK, hybrid signatures~\cite{differentiated} & 18 configurations & Testbed validated against the \texttt{.fr} TLD & 1.28--1.52$\times$ ECDSA latency; hybrid +7--19\% \\
+\hline
+Double signatures + fragmentation~\cite{doublesigned} & ECDSA/RSA + Falcon/Dilithium/ SPHINCS+ & Docker testbed on Amazon EC2 & ${<}\,9\%$ overhead vs.\ PQC-only \\
+\hline
+DoQ, no DNSSEC~\cite{doqfirstlook} & -- & 264 resolvers, single vantage point & DoQ faster than DoT/DoH; expected 1-RTT handshake \\
+\hline
+TCP fallback in production (Cloudflare)~\cite{cloudflareblog} & ML-DSA-44 & Public resolver 1.1.1.1 & Validation deployed; 2,563-byte example response via TCP \\
+\hline
+\textbf{This project:} TCP fallback (+ ARRF, DoQ) & ECDSA P-256 vs.\ ML-DSA-44 & Controlled latency and packet loss & See Part~2 \\
+\hline
+\end{tabularx}
+\end{table*}
+
 \begin{thebibliography}{00}
 
 %BIB-BEGIN
@@ -747,6 +910,20 @@ DoQ~\cite{rfc9250,rfc9000,doqfirstlook} & ${\approx}\,2$ (cold), ${\approx}\,1$ 
 \bibitem{rfc9000} J. Iyengar and M. Thomson, Eds., ``QUIC: A UDP-based multiplexed and secure transport,'' RFC~9000, Internet Engineering Task Force (IETF), May 2021. [Online]. Available: \url{https://www.rfc-editor.org/rfc/rfc9000}. [Accessed: Oct. 29, 2026].
 
 \bibitem{qbf} A. S. Rawat and M. P. Jhanwar, ``Post-quantum DNSSEC over UDP via QNAME-based fragmentation,'' in \emph{Security, Privacy, and Applied Cryptography Engineering (SPACE 2023)}, Lecture Notes in Computer Science. Cham, Switzerland: Springer, 2024, pp.~66--85, doi: 10.1007/978-3-031-51583-5\_4.
+
+\bibitem{nistir8413} G. Alagic \emph{et al.}, ``Status report on the third round of the NIST post-quantum cryptography standardization process,'' National Institute of Standards and Technology, Gaithersburg, MD, USA, NIST IR 8413-upd1, Jul. 2022 (updated Sep. 2022), doi: 10.6028/NIST.IR.8413-upd1.
+
+\bibitem{doublesigned} S. W. Shah, L. Pan, W. Armstrong, D. D. N. Nguyen, R. Doss, and P. Gauravaram, ``Double-signed fragmented DNSSEC for countering quantum threat,'' extended version, arXiv:2411.07535, 2025. [Online]. Available: \url{https://arxiv.org/abs/2411.07535}. [Accessed: Oct. 29, 2026]. A preliminary version was published as ``Towards double-signed DNSSEC for countering quantum threat,'' in \emph{Proc. 2025 IEEE 35th Int. Telecommunication Networks and Applications Conf. (ITNAC)}, 2025, pp.~1--8, doi: 10.1109/ITNAC66378.2025.11302658.
+
+\bibitem{arrfsec} C. McGowan, J. Liu, and S. Ruj, ``Security considerations for post-quantum signatures in DNSSEC via request-based fragmentation,'' in \emph{Companion Proc. ACM Web Conf. 2025 (WWW '25 Companion)}, 2025, pp.~1189--1193, doi: 10.1145/3701716.3715585.
+
+\bibitem{fragmisassoc} M. Raavi, S. Wuthier, and S.-Y. Chang, ``Securing post-quantum DNSSEC against fragmentation mis-association threat,'' in \emph{Proc. IEEE Int. Conf. Communications (ICC 2024)}, 2024, pp.~97--102, doi: 10.1109/ICC51166.2024.10622607.
+
+\bibitem{differentiated} M. Espie, H. Mayer, and L. Perret, ``A differentiated approach for post-quantum DNSSEC,'' in \emph{Proc. ACM Asia Conf. Computer and Communications Security (ASIA CCS '26)}, 2026, pp.~489--501, doi: 10.1145/3779208.3805967.
+
+\bibitem{mtldraft} A. Fregly, J. Harvey, B. Kaliski, and D. Wessels, ``Stateless hash-based signatures in Merkle tree ladder mode (SLH-DSA-MTL) for DNSSEC,'' IETF Internet-Draft draft-fregly-dnsop-slh-dsa-mtl-dnssec-06 (work in progress), Mar. 2026. [Online]. Available: \url{https://datatracker.ietf.org/doc/draft-fregly-dnsop-slh-dsa-mtl-dnssec/}. [Accessed: Oct. 29, 2026].
+
+\bibitem{mtl} A. Fregly, J. Harvey, B. S. Kaliski Jr., and S. Sheth, ``Merkle tree ladder mode: Reducing the size impact of NIST PQC signature algorithms in practice,'' in \emph{Topics in Cryptology -- CT-RSA 2023}, Lecture Notes in Computer Science, vol.~13871, 2023, pp.~415--441, doi: 10.1007/978-3-031-30872-7\_16.
 %BIB-END
 
 \end{thebibliography}
