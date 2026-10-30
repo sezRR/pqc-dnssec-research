@@ -420,21 +420,32 @@ inside a common path MTU without fragmentation~\cite{rfc6891,cloudflaremtu}.
 
 The widely used 1,232-byte value is based on the minimum MTU of
 1,280~bytes~\cite{rfc9715}, which the IPv6 specification requires for every
-link in the Internet~\cite{rfc8200}; subtracting the 40-byte IPv6 header and
-the 8-byte UDP header gives the largest DNS payload that fits into such a
-packet~\cite{turbodns}:
+link in the Internet~\cite{rfc8200}. Subtracting the IPv6 header
+($H_\text{IPv6} = 40$~bytes) and the UDP header ($H_\text{UDP} = 8$~bytes)
+from this minimum MTU gives the largest DNS payload $B_\text{max}$ that fits
+into such a packet~\cite{turbodns}:
 \begin{equation}
-1232 = 1280 - 40 - 8 .
+\begin{aligned}
+B_\text{max} &= \mathit{MTU}_\text{min} - H_\text{IPv6} - H_\text{UDP}\\
+&= 1280 - 40 - 8 = 1232~\text{bytes}.
+\end{aligned}
 \label{eq:payload}
 \end{equation}
 More recently, RFC~9715 recommends a maximum DNS/UDP payload size of
 1,400~bytes as a default, while explicitly allowing smaller values such as
 1,232~bytes~\cite{rfc9715}. In either case, a response of size $S$ can only be
-sent in a single UDP datagram if it does not exceed the applicable payload
-limit $B$, which is determined by the UDP payload size advertised by the
-requestor~\cite{rfc6891} and the responder's own limits~\cite{rfc9715}; a
-response that does not fit is truncated and the TC flag is set
-(Section~\ref{sec:tcp})~\cite{rfc1035,rfc6891}.
+sent in a single UDP datagram if
+\begin{equation}
+S \leq B = \min\left(B_\text{req},\, B_\text{resp}\right),
+\label{eq:fit}
+\end{equation}
+where $B_\text{req}$ is the UDP payload size advertised by the
+requestor~\cite{rfc6891} and $B_\text{resp}$ is the responder's own
+limit~\cite{rfc9715}; a response that violates~\eqref{eq:fit} is truncated and
+the TC flag is set (Section~\ref{sec:tcp})~\cite{rfc1035,rfc6891}. Since a
+single ML-DSA-44 signature already occupies 2,420~bytes~\cite{mldsadraft}, any
+response carrying one violates~\eqref{eq:fit} whenever the conservative limit
+$B = B_\text{max}$ from~\eqref{eq:payload} is used.
 
 \subsubsection{IP Fragmentation and Its Reliability Problems}
 
@@ -487,28 +498,36 @@ This is consistent with the round-trip counts reported in~\cite{doqfirstlook},
 whose authors expect one RTT for DNS over UDP and two RTTs (handshake plus
 query) for DNS over TCP when TCP is used directly~\cite{doqfirstlook}. A
 further round trip can be added when a response does not fit into the TCP
-initial congestion window: the authors of~\cite{turbodns} use an initial
-window of 10~segments with a maximum segment size (MSS) of
+initial congestion window $W_\text{init}$, the product of the initial window
+$\mathit{IW}$ (in segments) and the maximum segment size (MSS). The authors
+of~\cite{turbodns} use $\mathit{IW} = 10$ segments and an MSS of
 1,220~bytes~\cite{turbodns}:
 \begin{equation}
-\mathit{initcwnd} = 10 \times 1220\,\text{B} = 12.2\,\text{kB} .
+W_\text{init} = \mathit{IW} \times \mathit{MSS} = 10 \times 1220\,\text{B}
+= 12.2\,\text{kB}.
 \label{eq:initcwnd}
 \end{equation}
-They observe that SPHINCS+-128s and Dilithium-5 responses exceed this window
-and therefore need one round trip more than Falcon-512 or Dilithium-2
-responses~\cite{turbodns}. Packet loss affects large responses in a similar
-way: for a packet-loss rate of 1\% and SPHINCS+-128s, where a resolution
-session comprises about 46 DNS packets, the authors of~\cite{turbodns} estimate
-the probability that at least one packet is lost as~\cite{turbodns}
+A response with $S > W_\text{init}$ cannot be delivered within the first
+congestion window. Accordingly, the authors of~\cite{turbodns} observe that
+SPHINCS+-128s and Dilithium-5 responses exceed the window
+in~\eqref{eq:initcwnd} and therefore need one round trip more than Falcon-512
+or Dilithium-2 responses~\cite{turbodns}.
+
+Packet loss affects large responses in a similar way. If each of the $n$
+packets of a resolution session is lost independently with probability $p$,
+the probability that at least one of them is lost is
 \begin{equation}
-\Pr = 1 - (0.99)^{46} \approx 0.37
+P_\text{loss}(n, p) = 1 - (1 - p)^{n}.
 \label{eq:loss}
 \end{equation}
-and conclude that such a session needs an additional round trip with a
-probability of about one third~\cite{turbodns}. Since larger responses consist
-of more packets, larger post-quantum responses are expected to be more
-sensitive to packet loss---one of the effects evaluated in the practical part
-of this project.
+For SPHINCS+-128s, where a resolution session comprises about 46 DNS packets,
+and a packet-loss rate of 1\%, the authors of~\cite{turbodns} obtain
+$P_\text{loss}(46, 0.01) = 1 - 0.99^{46} \approx 0.37$ and conclude that such
+a session needs an additional round trip with a probability of about one
+third~\cite{turbodns}. Because $P_\text{loss}$ in~\eqref{eq:loss} grows
+monotonically with $n$, larger post-quantum responses, which consist of more
+packets, are expected to be more sensitive to packet loss---one of the effects
+evaluated in the practical part of this project.
 
 \subsubsection{Size of Signed DNS Responses}
 \label{sec:respsize}
@@ -556,8 +575,9 @@ make servers less attractive amplifiers~\cite{rfc8482}. The authors
 of~\cite{retrofitting} likewise list the attractiveness of large DNSSEC records
 for DDoS amplification as a reason why signatures should remain
 small~\cite{retrofitting}. Since post-quantum signatures substantially increase
-the response size (Section~\ref{sec:respsize}), the transport mechanism also
-determines how much of this potential is exposed: the TCP handshake generally
+the response size (Section~\ref{sec:respsize}), and since for a given query $A$
+in~\eqref{eq:amplification} grows linearly with $S_\text{response}$, the
+transport mechanism also determines how much of this potential is exposed: the TCP handshake generally
 prevents address spoofing and thus the reflection/amplification attacks that
 affect UDP~\cite{rfc7766}, and DoQ implementations must limit the worst-case
 amplification to a factor of~3~\cite{rfc9250}.
@@ -605,9 +625,9 @@ of round trips required by ARRF as
 R_\text{ARRF} = \left\lceil \frac{S}{M} \right\rceil .
 \label{eq:arrf}
 \end{equation}
-With the exception of the initial round trip, these round trips can be
-performed in parallel, which reduces the overall resolution
-time~\cite{arrf}; parallel ARRF therefore needs a minimum of two round
+With the exception of the initial round trip, the round trips counted
+in~\eqref{eq:arrf} can be performed in parallel, which reduces the overall
+resolution time~\cite{arrf}; parallel ARRF therefore needs a minimum of two round
 trips~\cite{turbodns}. The authors of~\cite{arrf} also point out limitations:
 middleboxes that inspect resource record types might reject RRFRAGs, packet
 loss was not evaluated, and nothing prevents an on-path attacker from changing
@@ -655,10 +675,28 @@ by at least two round trips over TCP~\cite{turbodns}; parallel ARRF needs a
 minimum of two round trips~\cite{turbodns}; and DoQ needs one handshake round
 trip followed by the query, i.e., two round trips~\cite{doqfirstlook}, whereas
 clients and servers should reuse a single QUIC connection for multiple
-queries, so that the handshake is not repeated~\cite{rfc9250}. These counts
-ignore processing and serialization delays as well as additional round trips
-caused by packet loss or by exceeding the initial congestion window
-(Section~\ref{sec:tcp}).
+queries, so that the handshake is not repeated~\cite{rfc9250}. Ignoring
+processing and serialization delays, the time $T_m$ needed by mechanism $m$ to
+complete one such exchange can therefore be expressed as a multiple $k_m$ of the
+path round-trip time:
+\begin{equation}
+\begin{aligned}
+T_m &\approx k_m \cdot \mathit{RTT},\\
+k_m &=
+\begin{cases}
+1, & \text{UDP, if~\eqref{eq:fit} holds},\\
+\geq 3, & \text{TCP fallback ($1 + {\geq}\,2$)},\\
+\geq 2, & \text{parallel ARRF},\\
+2 \,/\, 1, & \text{DoQ (cold\,/\,warm)}.
+\end{cases}
+\end{aligned}
+\label{eq:latency}
+\end{equation}
+Equation~\eqref{eq:latency} is a lower bound: an exchange may need further round
+trips when the response exceeds the initial congestion window~\eqref{eq:initcwnd}
+or when packets are lost~\eqref{eq:loss} (Section~\ref{sec:tcp}). It also
+describes a single exchange; a full resolution may involve several exchanges,
+not all of which carry oversized responses.
 
 \begin{figure*}[!t]
 \centering
