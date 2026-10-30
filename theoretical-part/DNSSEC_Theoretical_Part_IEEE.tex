@@ -10,6 +10,14 @@
 \usepackage{tabularx}
 \usepackage[hyphens]{url}
 \renewcommand{\tabularxcolumn}[1]{>{\raggedright\arraybackslash}p{#1}}
+% Start a new, independently centered row of author blocks.
+\makeatletter
+\newcommand{\linebreakand}{%
+  \end{@IEEEauthorhalign}
+  \hfill\mbox{}\par
+  \mbox{}\hfill\begin{@IEEEauthorhalign}
+}
+\makeatother
 \begin{document}
 
 \title{Evaluating the Transport Impact of Large\\Post-Quantum DNSSEC Signatures\\
@@ -27,7 +35,7 @@ Lisbon, Portugal}
 \IEEEauthorblockA{\textit{Student no.\ 145872}\\
 \textit{ISCTE -- Instituto Universit\'ario de Lisboa}\\
 Lisbon, Portugal}
-\and
+\linebreakand
 \IEEEauthorblockN{Efim Shchegolev}
 \IEEEauthorblockA{\textit{Student no.\ 144376}\\
 \textit{ISCTE -- Instituto Universit\'ario de Lisboa}\\
@@ -159,8 +167,8 @@ transport mechanism currently represents the most realistic path toward a
 quantum-resistant DNSSEC deployment.
 
 Concretely, the project is guided by the following research questions, which
-will be answered in the practical part (Project -- Part~2):
-\begin{itemize}
+will be answered in the practical part (Project~--~Part~2):
+\begin{IEEEdescription}[\IEEEsetlabelwidth{\textbf{RQ3:}}\IEEEusemathlabelsep]
 \item[\textbf{RQ1:}] How much do ML-DSA-44 signatures increase DNSSEC response
 sizes, packet sizes, and bandwidth consumption, and how often do they trigger
 truncation and TCP fallback, compared with the ECDSA baseline?
@@ -169,7 +177,7 @@ utilization of post-quantum DNSSEC with TCP fallback change as path latency and
 packet loss increase?
 \item[\textbf{RQ3:}] (Time permitting.) To what extent can ARRF or DNS over
 QUIC reduce the overhead identified in RQ1 and RQ2?
-\end{itemize}
+\end{IEEEdescription}
 
 The remainder of this (theoretical) part of the report is structured as
 follows. Section~\ref{sec:foundations} introduces the theoretical foundations
@@ -878,7 +886,7 @@ how ML-DSA-44 specifically compares with an ECDSA baseline in a reproducible
 setting, remains largely open.
 
 These findings translate directly into the design of the practical part
-(Project -- Part~2). Part~2 will address the research questions formulated in
+(Project~--~Part~2). Part~2 will address the research questions formulated in
 Section~\ref{sec:intro}: it will describe the experimental testbed, the
 simulated network conditions, and the measurement methodology in detail and
 compare the measured results with the findings summarized above.
