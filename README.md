@@ -39,7 +39,6 @@ post-quantum DNSSEC.
 └── theoretical-part/                     # Project – Part 1 (report)
     ├── DNSSEC_Theoretical_Part_IEEE.tex  # report source (IEEE conference template)
     ├── DNSSEC_Theoretical_Part_IEEE.pdf  # compiled report
-    ├── DNSSEC_Theoretical_Part_v2.pdf    # earlier draft (before the IEEE migration)
     ├── figures/                          # figures used in the report
     ├── IEEEtran.cls                      # IEEE LaTeX class
     └── IEEEtran_HOWTO.pdf                # IEEE template documentation
@@ -64,8 +63,12 @@ latexmk -c   # optional: remove auxiliary files
 2. **Theoretical Foundations** – DNS and DNSSEC, classical and post-quantum
    signature algorithms, DNS message-size limits (EDNS(0), IP fragmentation,
    truncation and TCP fallback, response sizes, amplification), and transport
-   mechanisms (TCP fallback, ARRF, DNS over QUIC).
-3. **State of the Art and Related Work** – comparison of existing studies
-   (requirements analyses, ARRF, QBF, TurboDNS, CoreDNS PQC signing, MTL mode,
-   double signatures, DoQ measurements, Cloudflare deployment).
-4. **Conclusion** – summary and transition to the practical part.
+   mechanisms (TCP fallback, ARRF, DNS over QUIC), with a round-trip latency
+   model.
+3. **State of the Art and Related Work** – related work grouped by algorithm
+   suitability, TCP fallback alternatives (TurboDNS, QBF, double signatures),
+   application-layer fragmentation security, encrypted transports (DoQ), and
+   signature-size reduction (MTL mode, differentiated KSK/ZSK), followed by a
+   comparative synthesis and the research gap.
+4. **Conclusions and Future Work** – summary of findings and the plan for the
+   practical part.
