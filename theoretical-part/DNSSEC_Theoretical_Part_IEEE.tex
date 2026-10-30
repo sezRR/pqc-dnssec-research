@@ -186,9 +186,9 @@ that are necessary to understand the problem: the DNS and DNSSEC protocols, the
 classical and post-quantum signature algorithms relevant to this project, and
 the mechanisms that govern DNS message size and transport selection.
 Section~\ref{sec:related} positions this project with respect to the existing
-state of the art and related work. Section~\ref{sec:conclusion} closes the
-theoretical part with a brief summary and a transition toward the practical
-implementation and evaluation that are reported in Part~2 of this project.
+state of the art and related work. Section~\ref{sec:conclusion} summarizes
+the findings and outlines future work, namely the practical implementation and
+evaluation that are reported in Part~2 of this project.
 The sources of this report and its figures, and, in Part~2, the testbed
 configuration, measurement scripts, and results, are publicly available in the
 project repository at \url{https://github.com/sezRR/pqc-dnssec-research}.
@@ -952,8 +952,10 @@ TCP fallback in production (Cloudflare)~\cite{cloudflareblog} & ML-DSA-44 & Publ
 \end{tabularx}
 \end{table*}
 
-\section{Conclusion of the Theoretical Part}
+\section{Conclusions and Future Work}
 \label{sec:conclusion}
+
+\subsection{Conclusions}
 
 This theoretical part has shown that the migration of DNSSEC to post-quantum
 signatures is, to a large extent, a transport problem. ML-DSA-44, the parameter
@@ -972,8 +974,8 @@ The literature reviewed in Section~\ref{sec:related} shows that these options
 differ mainly in the number of round trips they require: for a single query on
 a new connection, TCP fallback costs one wasted UDP round trip plus at least
 two TCP round trips, parallel ARRF at least two round trips, and DoQ two round
-trips, with the handshake not repeated on a reused connection
-(Section~\ref{sec:comparison})~\cite{rfc9250,turbodns,doqfirstlook}. Published
+trips, with the handshake not repeated on a reused connection, as summarized
+by the model in~\eqref{eq:latency}~\cite{rfc9250,turbodns,doqfirstlook}. Published
 measurements show that standard TCP fallback roughly doubles the resolution
 time compared with classical DNSSEC over UDP, while under lossless conditions
 TurboDNS and QBF almost close this gap and parallel ARRF reduces
@@ -981,11 +983,26 @@ it~\cite{arrf,turbodns,qbf}. How these mechanisms behave under packet loss, and
 how ML-DSA-44 specifically compares with an ECDSA baseline in a reproducible
 setting, remains largely open.
 
+\subsection{Future Work}
+
 These findings translate directly into the design of the practical part
-(Project~--~Part~2). Part~2 will address the research questions formulated in
-Section~\ref{sec:intro}: it will describe the experimental testbed, the
-simulated network conditions, and the measurement methodology in detail and
-compare the measured results with the findings summarized above.
+(Project~--~Part~2), which will address the research questions formulated in
+Section~\ref{sec:intro}. The planned work consists of four steps:
+\begin{enumerate}
+\item building a controlled testbed with an authoritative name server and a
+resolver that sign and validate zones with ECDSA P-256 as the classical
+baseline and with ML-DSA-44 as the post-quantum case;
+\item emulating network paths with varying latency and packet loss;
+\item measuring response and packet sizes, bandwidth consumption, the
+frequency of truncation and TCP fallback, end-to-end query latency, and
+resource utilization (RQ1 and RQ2), and comparing the observed round trips
+with the model in~\eqref{eq:latency};
+\item time permitting, extending the evaluation to ARRF and DoQ (RQ3).
+\end{enumerate}
+Part~2 will describe the testbed, the simulated network conditions, and the
+measurement methodology in detail, compare the measured results with the
+findings summarized above, and publish the testbed configuration, measurement
+scripts, and results in the project repository.
 
 \begin{thebibliography}{00}
 
